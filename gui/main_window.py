@@ -13,10 +13,11 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog,
     QLabel, QSlider, QSpinBox, QCheckBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QMessageBox, QComboBox, QLineEdit, QProgressBar, QListWidget, QListWidgetItem,
-    QDialog, QFormLayout
+    QDialog, QFormLayout, QKeySequenceEdit
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt5.QtGui import QFont, QIcon
+from PyQt5.QtGui import QFont, QIcon, QKeySequence
+from PyQt5.QtWidgets import QShortcut
 
 from midi.midi_parser import MIDIParser
 from midi.converter import MIDIToKeyboardConverter
@@ -63,6 +64,56 @@ class WorkerThread(QThread):
         downloader = YouTubeDownloader(output_dir)
         midi_path = downloader.download_and_convert(url)
         self.task_completed.emit(f"ダウンロードと変換完了: {midi_path}")
+
+
+class ShortcutSettingsDialog(QDialog):
+    """ショートカット設定ダイアログ"""
+    
+    def __init__(self, parent=None, shortcuts=None):
+        super().__init__(parent)
+        self.shortcuts = shortcuts or {}
+        self.setWindowTitle("ショートカット設定")
+        self.setGeometry(100, 100, 400, 200)
+        self.init_ui()
+    
+    def init_ui(self):
+        layout = QVBoxLayout()
+        form_layout = QFormLayout()
+        
+        # ショートカット設定
+        self.play_pause_input = QKeySequenceEdit()
+        self.play_pause_input.setKeySequence(QKeySequence(self.shortcuts.get('play_pause', 'Space')))
+        form_layout.addRow("再生/停止:", self.play_pause_input)
+        
+        self.stop_input = QKeySequenceEdit()
+        self.stop_input.setKeySequence(QKeySequence(self.shortcuts.get('stop', 'Escape')))
+        form_layout.addRow("停止:", self.stop_input)
+        
+        layout.addLayout(form_layout)
+        
+        # ボタン
+        button_layout = QHBoxLayout()
+        
+        save_btn = QPushButton("保存")
+        save_btn.clicked.connect(self.save_shortcuts)
+        button_layout.addWidget(save_btn)
+        
+        cancel_btn = QPushButton("キャンセル")
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+    
+    def save_shortcuts(self):
+        """ショートカットを保存"""
+        self.shortcuts['play_pause'] = self.play_pause_input.keySequence().toString().lower()
+        self.shortcuts['stop'] = self.stop_input.keySequence().toString().lower()
+        self.accept()
+    
+    def get_shortcuts(self):
+        """ショートカット設定を取得"""
+        return self.shortcuts
 
 
 class SettingsDialog(QDialog):
@@ -137,12 +188,14 @@ class MainWindow(QMainWindow):
         self.converter = MIDIToKeyboardConverter()
         self.current_notes = None
         self.current_file = None
+        self.shortcuts = {}
         
         # ログ設定
         logging.basicConfig(level=logging.INFO)
         
         self.init_ui()
         self.load_settings()
+        self.setup_shortcuts()
     
     def init_ui(self):
         """UI を初期化"""
@@ -254,6 +307,14 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(key_press_layout)
         
+        # ショートカット情報表示
+        shortcut_label = QLabel(
+            f"ショートカット: {self.shortcuts.get('play_pause', 'Space')} - 再生/停止 | "
+            f"{self.shortcuts.get('stop', 'Escape')} - 停止"
+        )
+        shortcut_label.setStyleSheet("color: gray; font-size: 10px;")
+        layout.addWidget(shortcut_label)
+        
         layout.addStretch()
         
         widget.setLayout(layout)
@@ -320,6 +381,11 @@ class MainWindow(QMainWindow):
         mapping_btn = QPushButton("キーマッピングを編集")
         mapping_btn.clicked.connect(self.open_key_mapping_settings)
         layout.addWidget(mapping_btn)
+        
+        # ショートカット編集
+        shortcut_btn = QPushButton("ショートカットを編集")
+        shortcut_btn.clicked.connect(self.open_shortcut_settings)
+        layout.addWidget(shortcut_btn)
         
         layout.addStretch()
         
@@ -476,6 +542,35 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self, self.converter)
         dialog.exec_()
     
+    def open_shortcut_settings(self):
+        """ショートカット設定ダイアログを開く"""
+        dialog = ShortcutSettingsDialog(self, self.shortcuts)
+        if dialog.exec_():
+            self.shortcuts = dialog.get_shortcuts()
+            self.save_settings()
+            self.setup_shortcuts()
+            QMessageBox.information(self, "成功", "ショートカット設定を保存しました")
+    
+    def setup_shortcuts(self):
+        """ショートカットキーをセットアップ"""
+        play_pause_key = self.shortcuts.get('play_pause', 'Space')
+        stop_key = self.shortcuts.get('stop', 'Escape')
+        
+        # 再生/停止ショートカット
+        QShortcut(QKeySequence(play_pause_key), self, self.toggle_play_pause)
+        
+        # 停止ショートカット
+        QShortcut(QKeySequence(stop_key), self, self.stop_midi)
+        
+        logger.info(f"ショートカットをセットアップ: {play_pause_key} (再生/停止), {stop_key} (停止)")
+    
+    def toggle_play_pause(self):
+        """再生/停止を切り替え"""
+        if self.play_btn.isEnabled():
+            self.play_midi()
+        elif self.stop_btn.isEnabled():
+            self.stop_midi()
+    
     def load_settings(self):
         """設定を読み込む"""
         settings_path = os.path.join(
@@ -488,11 +583,39 @@ class MainWindow(QMainWindow):
                 self.speed_slider.setValue(int(settings.get('playback_speed', 1.0) * 100))
                 self.timing_spinbox.setValue(int(settings.get('timing_offset_ms', 0)))
                 self.key_press_spinbox.setValue(int(settings.get('key_press_duration_ms', 100)))
+                self.shortcuts = settings.get('shortcuts', {
+                    'play_pause': 'Space',
+                    'stop': 'Escape'
+                })
         except Exception as e:
             logger.warning(f"設定読み込みエラー: {e}")
+            self.shortcuts = {
+                'play_pause': 'Space',
+                'stop': 'Escape'
+            }
+    
+    def save_settings(self):
+        """設定を保存"""
+        settings_path = os.path.join(
+            os.path.dirname(__file__), '..', 'config', 'settings.json'
+        )
+        
+        try:
+            settings = {
+                'playback_speed': self.speed_slider.value() / 100.0,
+                'timing_offset_ms': self.timing_spinbox.value(),
+                'key_press_duration_ms': self.key_press_spinbox.value(),
+                'shortcuts': self.shortcuts
+            }
+            with open(settings_path, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, indent=2, ensure_ascii=False)
+            logger.info("設定を保存しました")
+        except Exception as e:
+            logger.error(f"設定保存エラー: {e}")
     
     def closeEvent(self, event):
         """ウィンドウを閉じるときの処理"""
+        self.save_settings()
         if self.converter.is_playing:
             self.converter.stop_playback()
         event.accept()
