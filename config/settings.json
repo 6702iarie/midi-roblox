@@ -1,0 +1,9 @@
+{
+  "playback_speed": 1.0,
+  "timing_offset_ms": 0,
+  "key_press_duration_ms": 100,
+  "shortcuts": {
+    "play_pause": "space",
+    "stop": "escape"
+  }
+}
